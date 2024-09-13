@@ -61,4 +61,4 @@ Contributions, issues, and feature requests are welcome. Feel free to check the 
 License
 -------
 
-Distributed under a free license. See [LICENSE](LICENSE) for more information.
+Distributed under a free license. do whatever you want with it i don't care
