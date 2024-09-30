@@ -1,4 +1,4 @@
-package BrowserScript
+package browserScript
 
 import (
 	"context"
