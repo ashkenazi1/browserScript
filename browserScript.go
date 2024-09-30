@@ -7,14 +7,20 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
 type Action struct {
-	Action string                 `json:"action"`
-	Params map[string]interface{} `json:"params"`
+	Action   string  `json:"action"`
+	Url      string  `json:"url,omitempty"`      // For navigate
+	Selector string  `json:"selector,omitempty"` // For waitVisible, getText, click, etc.
+	Timeout  float64 `json:"timeout,omitempty"`  // For wait
+	Result   string  `json:"result,omitempty"`   // For getText and screenshot
+	Path     string  `json:"path,omitempty"`     // For screenshot path
+	Format   string  `json:"format,omitempty"`   // For screenshot format
+	Value    string  `json:"value,omitempty"`    // For setValue
+	Js       string  `json:"js,omitempty"`       // For evaluate
 }
 
 type Script struct {
@@ -29,7 +35,7 @@ func getDefaultTasks() chromedp.Tasks {
 			chromedp.Evaluate(`delete navigator.__proto__.webdriver;`, nil).Do(ctx)
 			chromedp.Evaluate(`window.chrome = { runtime: {} };`, nil).Do(ctx)
 			chromedp.Evaluate(`Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });`, nil).Do(ctx)
-			chromedp.Evaluate(`Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });`, nil).Do(ctx)
+			chromedp.Evaluate(`Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });`, nil)
 			return nil
 		}),
 
@@ -94,157 +100,76 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) e
 	for _, action := range script.Actions {
 		switch action.Action {
 		case "navigate":
-			url := action.Params["url"].(string)
-			u := url
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
 				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
-				return chromedp.Navigate(u).Do(ctxWithTimeout)
+				return chromedp.Navigate(action.Url).Do(ctxWithTimeout)
 			}))
-		case "waitReady":
-			selector := action.Params["selector"].(string)
-			sel := selector
+		case "waitVisible":
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
 				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
-				return chromedp.WaitReady(sel, chromedp.ByQuery).Do(ctxWithTimeout)
+				return chromedp.WaitVisible(action.Selector, chromedp.ByQuery).Do(ctxWithTimeout)
 			}))
-		case "waitForNavigation":
+		case "wait":
+			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
+				time.Sleep(time.Duration(action.Timeout) * time.Second)
+				return nil
+			}))
+		case "screenshot":
+			// Get the path and format if they are provided
+			path := action.Path
+			if path == "" {
+				path = action.Result // Default to using result as the file name
+			}
+			format := action.Format
+			if format == "" {
+				format = "png" // Default to PNG if no format is provided
+			}
+
+			tempScreenshot := new([]byte)
+			screenshotResults[action.Result] = tempScreenshot
+
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
 				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
-				return chromedp.WaitReady("body", chromedp.ByQuery).Do(ctxWithTimeout)
+				if err := chromedp.WaitReady("body", chromedp.ByQuery).Do(ctxWithTimeout); err != nil {
+					return err
+				}
+				return chromedp.FullScreenshot(tempScreenshot, 70).Do(ctxWithTimeout)
+			}))
+
+			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
+				fileName := fmt.Sprintf("%s.%s", path, format)
+				fullPath := filepath.Join(screenshotDir, fileName)
+				return os.WriteFile(fullPath, *screenshotResults[action.Result], 0644)
 			}))
 		case "getText":
-			selector, okSelector := action.Params["selector"].(string)
-			resultVar, okResult := action.Params["result"].(string)
-
-			if !okSelector || !okResult {
-				return fmt.Errorf("invalid or missing 'selector' or 'result' in action.Params: %+v", action.Params)
-			}
+			selector := action.Selector
+			resultVar := action.Result
 
 			tempResult := new(string)
 			results[resultVar] = tempResult
 
-			sel := selector
-			resultPtr := tempResult
-
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-
-				// Check if element exists
-				var nodes []*cdp.Node
-				if err := chromedp.Nodes(sel, &nodes, chromedp.ByQuery).Do(ctxWithTimeout); err != nil {
-					return err
-				}
-				if len(nodes) == 0 {
-					return fmt.Errorf("no elements found for selector: %s", sel)
-				}
-
-				// Get the text content
-				return chromedp.Text(sel, resultPtr, chromedp.NodeVisible).Do(ctxWithTimeout)
+				return chromedp.Text(selector, tempResult, chromedp.NodeVisible).Do(ctx)
 			}))
 		case "click":
-			selector := action.Params["selector"].(string)
-			sel := selector
+			selector := action.Selector
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-				return chromedp.Click(sel, chromedp.ByQuery).Do(ctxWithTimeout)
+				return chromedp.Click(selector, chromedp.ByQuery).Do(ctx)
 			}))
 		case "evaluate":
-			js := action.Params["js"].(string)
-			script := js
+			js := action.Js
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-				return chromedp.Evaluate(script, nil).Do(ctxWithTimeout)
-			}))
-		case "screenshot":
-			resultVar, okResult := action.Params["result"].(string)
-			if !okResult {
-				return fmt.Errorf("invalid or missing 'result' in action.Params: %+v", action.Params)
-			}
-			tempScreenshot := new([]byte)
-			screenshotResults[resultVar] = tempScreenshot
-
-			screenshotPtr := tempScreenshot
-
-			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-
-				// Ensure the page is ready
-				if err := chromedp.WaitReady("body", chromedp.ByQuery).Do(ctxWithTimeout); err != nil {
-					return err
-				}
-
-				// Take the screenshot
-				return chromedp.FullScreenshot(screenshotPtr, 70).Do(ctxWithTimeout)
-			}))
-		case "takeElementScreenshot":
-			selector, okSelector := action.Params["selector"].(string)
-			resultVar, okResult := action.Params["result"].(string)
-
-			if !okSelector || !okResult {
-				return fmt.Errorf("invalid or missing 'selector' or 'result' in action.Params: %+v", action.Params)
-			}
-
-			tempScreenshot := new([]byte)
-			screenshotResults[resultVar] = tempScreenshot
-
-			// Create local copies for closure
-			sel := selector
-			screenshotPtr := tempScreenshot
-
-			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-
-				// Check if element exists
-				var nodes []*cdp.Node
-				if err := chromedp.Nodes(sel, &nodes, chromedp.ByQuery).Do(ctxWithTimeout); err != nil {
-					return err
-				}
-				if len(nodes) == 0 {
-					return fmt.Errorf("no elements found for selector: %s", sel)
-				}
-
-				// Ensure the element is visible
-				if err := chromedp.WaitVisible(sel, chromedp.ByQuery).Do(ctxWithTimeout); err != nil {
-					return err
-				}
-				// Take the screenshot
-				return chromedp.Screenshot(sel, screenshotPtr, chromedp.NodeVisible).Do(ctxWithTimeout)
-			}))
-		case "wait":
-			duration := action.Params["timeout"].(float64)
-			dur := time.Duration(duration) * time.Second
-			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-				select {
-				case <-time.After(dur):
-					return nil
-				case <-ctxWithTimeout.Done():
-					return ctxWithTimeout.Err()
-				}
+				return chromedp.Evaluate(js, nil).Do(ctx)
 			}))
 		case "setValue":
-			selector, okSelector := action.Params["selector"].(string)
-			value, okValue := action.Params["value"].(string)
-			if !okSelector || !okValue {
-				return fmt.Errorf("invalid or missing 'selector' or 'value' in action.Params: %+v", action.Params)
-			}
-			sel := selector
-			val := value
+			selector := action.Selector
+			value := action.Value
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-				ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-				return chromedp.SetValue(sel, val, chromedp.ByQuery).Do(ctxWithTimeout)
+				return chromedp.SetValue(selector, value, chromedp.ByQuery).Do(ctx)
 			}))
-		// ... [Other cases remain the same]
 		default:
 			return fmt.Errorf("unknown action: %s", action.Action)
 		}
