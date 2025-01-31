@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/ashkenazi1/browserScript"
@@ -17,8 +18,10 @@ func main() {
 		},
 	}
 
-	err := browserScript.ExecuteScript(script, 5*time.Second, "./screenshots")
+	results, err := browserScript.ExecuteScript(script, 5*time.Second, "./screenshots")
 	if err != nil {
 		panic(err)
 	}
+
+	fmt.Println(*results["headerText"])
 }

@@ -28,7 +28,8 @@ type Script struct {
 	Actions []Action `json:"actions"`
 }
 
-func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) error {
+func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (results map[string]*string, err error) {
+
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
@@ -47,7 +48,7 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) e
 	defer cancelCtx()
 
 	tasks := chromedp.Tasks{}
-	results := make(map[string]*string)
+	results = make(map[string]*string)
 	screenshotResults := make(map[string]*[]byte)
 
 	// Handle JavaScript dialogs
@@ -104,26 +105,26 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) e
 			// Click on an element
 			tasks = append(tasks, chromedp.Click(action.Selector))
 		default:
-			return fmt.Errorf("unknown action: %s", action.Action)
+			return results, fmt.Errorf("unknown action: %s", action.Action)
 		}
 	}
 
 	// Run tasks
 	if err := chromedp.Run(ctx, tasks); err != nil {
-		return err
+		return results, err
 	}
 
-	// Process results
-	for key, value := range results {
-		fmt.Printf("%s: %s\n", key, *value)
-	}
+	// // Process results
+	// for key, value := range results {
+	// 	fmt.Printf("%s: %s\n", key, *value)
+	// }
 
 	for key, value := range screenshotResults {
 		fileName := filepath.Join(screenshotDir, fmt.Sprintf("%s.png", key))
 		if err := os.WriteFile(fileName, *value, 0644); err != nil {
-			return fmt.Errorf("failed to write screenshot %s: %v", fileName, err)
+			return results, fmt.Errorf("failed to write screenshot %s: %v", fileName, err)
 		}
 	}
 
-	return nil
+	return results, nil
 }
