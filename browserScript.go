@@ -39,6 +39,8 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (
 		chromedp.Flag("mute-audio", true),
 		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("lang", "en-US"),
+		chromedp.Flag("intl.accept_languages", "en-US,en"),
 	)
 
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
