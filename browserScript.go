@@ -66,6 +66,14 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (
 		case "navigate":
 			// Navigate to URL
 			tasks = append(tasks, chromedp.Navigate(action.Url))
+		case "getLink":
+			tempResult := new(string)
+			results[action.Result] = tempResult
+			tasks = append(tasks, chromedp.AttributeValue(action.Selector, "href", tempResult, nil))
+		case "getImage":
+			tempResult := new(string)
+			results[action.Result] = tempResult
+			tasks = append(tasks, chromedp.AttributeValue(action.Selector, "src", tempResult, nil))
 		case "waitVisible":
 			// Wait for an element to be visible
 			tasks = append(tasks, chromedp.WaitVisible(action.Selector))
