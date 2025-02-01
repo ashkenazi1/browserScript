@@ -2,7 +2,10 @@ package browserScript
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,7 +31,89 @@ type Script struct {
 	Actions []Action `json:"actions"`
 }
 
-func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (results map[string]*string, err error) {
+type Config struct {
+	Headless      bool
+	Timeout       time.Duration
+	ScreenshotDir string
+	UserAgent     string
+	Language      string
+	RunMode       string
+}
+
+type ChromeVersion struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type BrowserScript struct {
+	cfg      Config
+	Chromedp context.Context
+}
+
+func New(cfg Config) *BrowserScript {
+	if cfg.UserAgent == "" {
+		cfg.UserAgent = fmt.Sprintf("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36", fetchLatestUserAgent())
+	}
+	if cfg.Language == "" {
+		cfg.Language = "en-US"
+	}
+	if cfg.ScreenshotDir == "" {
+		cfg.ScreenshotDir = "screenshots"
+	}
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", cfg.Headless),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("window-size", "1920,1080"),
+		chromedp.Flag("disable-infobars", true),
+		chromedp.Flag("mute-audio", true),
+		chromedp.Flag("ignore-certificate-errors", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("lang", cfg.Language),
+		chromedp.Flag("intl.accept_languages", cfg.Language),
+		chromedp.Flag("accept-language", cfg.Language),
+		chromedp.UserAgent(cfg.UserAgent),
+	)
+
+	allocCtx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
+
+	switch cfg.RunMode {
+	case "interactive":
+		// Create a persistent browser instance
+		ctx, _ := chromedp.NewContext(allocCtx)
+		return &BrowserScript{
+			cfg:      cfg,
+			Chromedp: ctx,
+		}
+	default:
+		return &BrowserScript{
+			cfg: cfg,
+		}
+	}
+}
+
+func fetchLatestUserAgent() string {
+	response, err := http.Get("https://versionhistory.googleapis.com/v1/chrome/platforms/win/channels/stable/versions")
+	if err != nil {
+		return ""
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return ""
+	}
+
+	var data []ChromeVersion
+	if err := json.Unmarshal(body, &data); err != nil {
+		return ""
+	}
+
+	latestVersion := data[5].Version
+	return latestVersion
+}
+
+func (bs *BrowserScript) ExecuteScript(script Script) (results map[string]*string, err error) {
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -39,8 +124,10 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (
 		chromedp.Flag("mute-audio", true),
 		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("lang", "en-US"),
+		chromedp.Flag("lang", bs.cfg.Language),
 		chromedp.Flag("intl.accept_languages", "en-US,en"),
+		chromedp.Flag("accept-language", "en-US"),
+		chromedp.UserAgent(bs.cfg.UserAgent),
 	)
 
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
@@ -77,6 +164,12 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (
 		case "waitVisible":
 			// Wait for an element to be visible
 			tasks = append(tasks, chromedp.WaitVisible(action.Selector))
+		case "waitReady":
+			tasks = append(tasks, chromedp.WaitReady(action.Selector))
+		case "getHtml":
+			tempResult := new(string)
+			results[action.Result] = tempResult
+			tasks = append(tasks, chromedp.OuterHTML(action.Selector, tempResult))
 		case "wait":
 			// Wait for a specific time duration
 			tasks = append(tasks, chromedp.Sleep(time.Duration(action.Timeout)*time.Second))
@@ -98,12 +191,12 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (
 
 			tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
 				// Ensure the screenshot directory exists before saving the file
-				if err := os.MkdirAll(screenshotDir, os.ModePerm); err != nil {
+				if err := os.MkdirAll(bs.cfg.ScreenshotDir, os.ModePerm); err != nil {
 					return fmt.Errorf("failed to create screenshot directory: %v", err)
 				}
 
 				fileName := fmt.Sprintf("%s.%s", path, format)
-				fullPath := filepath.Join(screenshotDir, fileName)
+				fullPath := filepath.Join(bs.cfg.ScreenshotDir, fileName)
 				return os.WriteFile(fullPath, *tempScreenshot, 0644)
 			}))
 		case "getText":
@@ -130,11 +223,15 @@ func ExecuteScript(script Script, timeout time.Duration, screenshotDir string) (
 	// }
 
 	for key, value := range screenshotResults {
-		fileName := filepath.Join(screenshotDir, fmt.Sprintf("%s.png", key))
+		fileName := filepath.Join(bs.cfg.ScreenshotDir, fmt.Sprintf("%s.png", key))
 		if err := os.WriteFile(fileName, *value, 0644); err != nil {
 			return results, fmt.Errorf("failed to write screenshot %s: %v", fileName, err)
 		}
 	}
 
 	return results, nil
+}
+
+func (bs *BrowserScript) Close() {
+	chromedp.Cancel(bs.Chromedp)
 }
